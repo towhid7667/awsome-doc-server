@@ -5,6 +5,7 @@ const port = process.env.PORT || 5000
 require("dotenv").config();   
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const { query } = require('express');
+const stripe = require("stripe")(process.env.STRIPE_SK);
 
 
 const app = express();
@@ -41,12 +42,13 @@ async function run() {
         const bookingDatabase = client.db("awsomeDoc").collection("bookings");
         const userDatabase = client.db("awsomeDoc").collection("users");
         const DoctorsDatabase = client.db("awsomeDoc").collection("AwsomeDoctors");
+        const paymentsDatabase = client.db("awsomeDoc").collection("AwsomeDoctors");
 
 
         const verifyAdmin = async (req, res, next) =>{
             const decodedEmail = req.decoded.email;
             const query = { email: decodedEmail };
-            const user = await usersCollection.findOne(query);
+            const user = await userDatabase.findOne(query);
 
             if (user?.role !== 'admin') {
                 return res.status(403).send({ message: 'forbidden access' })
@@ -104,6 +106,7 @@ async function run() {
                     $project : {
                         name: 1,
                         slots: 1,
+                        price:1,
                         booked : {
                             $map : {
                                 input: '$booked',
@@ -119,6 +122,7 @@ async function run() {
                 {
                     $project : {
                         name : 1,
+                        price:1,
                         slots : {
                             $setDifference : ['$slots', '$booked']
                         }
@@ -144,6 +148,13 @@ async function run() {
 
         })
 
+
+        app.get('/bookings/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: ObjectId(id) };
+            const booking = await bookingDatabase.findOne(query);
+            res.send(booking);
+        })
 
         app.post('/bookings', async(req, res) => {
             const booking = req.body;
@@ -224,6 +235,19 @@ async function run() {
         })
 
 
+        // temporary to update price field on appointment options
+        // app.get('/addPrice', async (req, res) => {
+        //     const filter = {}
+        //     const options = { upsert: true }
+        //     const updatedDoc = {
+        //         $set: {
+        //             price: 101
+        //         }
+        //     }
+        //     const result = await docDatabase.updateMany(filter, updatedDoc, options);
+        //     res.send(result);
+        // })
+
 
         app.post('/awsomeDoctors',verifyJWT, verifyAdmin, async(req, res) => {
             const doctor = req.body;
@@ -240,6 +264,39 @@ async function run() {
             const id = req.params.id;
             const filter = { _id: ObjectId(id) };
             const result = await DoctorsDatabase.deleteOne(filter);
+            res.send(result);
+        })
+
+        app.post('/create-payment-intent', async (req, res) => {
+            const booking = req.body;
+            const price = booking.price;
+            const amount = price * 100;
+
+            const paymentIntent = await stripe.paymentIntents.create({
+                currency: 'usd',
+                amount: amount,
+                "payment_method_types": [
+                    "card"
+                ]
+            });
+            res.send({
+                clientSecret: paymentIntent.client_secret,
+            });
+        });
+
+
+        app.post('/payments', async (req, res) =>{
+            const payment = req.body;
+            const result = await paymentsDatabase.insertOne(payment);
+            const id = payment.bookingId
+            const filter = {_id: ObjectId(id)}
+            const updatedDoc = {
+                $set: {
+                    paid: true,
+                    transactionId: payment.transactionId
+                }
+            }
+            const updatedResult = await bookingDatabase.updateOne(filter, updatedDoc)
             res.send(result);
         })
 
